@@ -1,0 +1,2162 @@
+---
+title: "Michaud_et_al_Communications_Biology_Code"
+output: html_document
+date: '2022-09-27'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading Necessary Packages 
+```{r}
+library(dplyr)
+library(tidyverse)
+library(janitor)
+library(ggplot2)
+library(lubridate)
+library(piecewiseSEM)
+library(nlme)
+library(matrixStats)
+library(RColorBrewer)
+library(egg)
+library(vegan)
+library(pairwiseAdonis)
+library(indicspecies)
+library(ggh4x)
+```
+
+## Importing Data Files from SBC LTER 
+```{r}
+## Santa Barbara Coastal LTER, D. Reed, and R. Miller. 2022. SBC LTER: Reef: Long-term experiment: Kelp removal: Cover of sessile organisms, Uniform Point Contact ver 30. Environmental Data Initiative. https://doi.org/10.6073/pasta/1151c1dcf5110432b6d35f7dc00bb834 (Accessed 2022-09-27).
+# When this dataset was originally analyzed from the most recently available unpublished data, all dates after 2/25/21 were not yet available and will therefore be removed for this analysis.
+lte_cover <- read.csv("LTE_Cover_All_Years_20220308.csv") %>% 
+  janitor::clean_names()
+
+## Reed, D, R. Miller. 2022. SBC LTER: Reef: Long-term experiment: Kelp removal: Invertebrate and algal density ver 19. Environmental Data Initiative. https://doi.org/10.6073/pasta/decb1dcc7b35d2ef401b2dd7d79ea257. Accessed 2022-09-26.
+# When this dataset was originally analyzed from the most recently available unpublished data, all dates after 2/25/21 were not yet available and will therefore be removed for this analysis.
+lte_abundance <- read.csv("LTE_Quad_Swath_All_Years_20220308.csv") %>% 
+  janitor::clean_names() 
+
+## Reed, D, R. Miller. 2022. SBC LTER: Reef: Long-term experiment: biomass of kelp forest species, ongoing since 2008 ver 8. Environmental Data Initiative. https://doi.org/10.6073/pasta/e30eb31ce1f346255910fe17092f00b1. Accessed 2022-09-26.
+# When this dataset was originally analyzed from the most recently available unpublished data, all dates after 2/25/21 were not yet available and will therefore be removed for this analysis.
+lte_biomass <- read.csv("LTE_All_Species_Biomass_at_transect_20220308.csv") %>% 
+  janitor::clean_names()
+
+## Santa Barbara Coastal LTER, D. Reed, and R. Miller. 2022. SBC LTER: Reef: Bottom Temperature: Continuous water temperature, ongoing since 2000 ver 26. Environmental Data Initiative. https://doi.org/10.6073/pasta/22ed009da1cf41cbf76490ab2c0c5949 (Accessed 2022-09-27)
+lte_temp <- read.csv("Bottom_temp_all_years_20210804.csv") %>% 
+  janitor::clean_names()
+```
+
+## Extracting bottom temperature data 
+```{r}
+## Bottom temperature
+lte_bottom_temperature <- lte_temp %>% 
+  filter(site == c("AQUE", "CARP", "MOHK", "NAPL", "IVEE")) %>% 
+  mutate(date = ymd(date_local)) %>%
+  mutate(month = lubridate::month(date),
+         year = lubridate::year(date)) %>% 
+  dplyr::select(site, date, month, year, time_local, temp_c) %>% 
+  mutate(seas = case_when(month == "12" ~ 0.90,
+                            month == "1" ~ 0.00,
+                            month == "2" ~ 0.00,
+                            month == "3" ~ 0.25,
+                            month == "4" ~ 0.25,
+                            month == "5" ~ 0.25,
+                            month == "6" ~ 0.50,
+                            month == "7" ~ 0.50,
+                            month == "8" ~ 0.50,
+                            month == "9" ~ 0.75,
+                            month == "10" ~ 0.75,
+                            month ==  "11" ~ 0.75)) %>% 
+  mutate(time = year + seas) %>% 
+  mutate(time = case_when(
+    time == 2002.90 ~ "2003.00",
+    time == 2003.90 ~ "2004.00",    
+    time == 2004.90 ~ "2005.00",
+    time == 2005.90 ~ "2006.00",
+    time == 2006.90 ~ "2007.00",
+    time == 2007.90 ~ "2008.00",
+    time == 2008.90 ~ "2009.00",
+    time == 2009.90 ~ "2010.00",
+    time == 2010.90 ~ "2011.00",
+    time == 2011.90 ~ "2012.00",
+    time == 2012.90 ~ "2013.00",
+    time == 2013.90 ~ "2014.00",
+    time == 2014.90 ~ "2015.00",
+    time == 2015.90 ~ "2016.00",
+    time == 2016.90 ~ "2017.00",
+    time == 2017.90 ~ "2018.00",
+    time == 2018.90 ~ "2019.00",
+    time == 2019.90 ~ "2020.00",
+    time == 2020.90 ~ "2021.00",
+    TRUE ~ as.character(as.numeric(time)))) %>% 
+  mutate(time = as.numeric(time)) %>% 
+  mutate(seas = case_when(
+    seas == 0.00 ~ 0.00, 
+    seas == 0.25 ~ 0.25,
+    seas == 0.50 ~ 0.50,
+    seas == 0.75 ~ 0.75,
+    seas == 0.90 ~ 0.00)) %>% 
+  mutate(year = time - seas) %>% 
+  mutate(season = seas) %>% 
+  mutate(season = case_when(
+    season == 0.00 ~ "W",
+    season == 0.25 ~ "Sp",
+    season == 0.50 ~ "Su",
+    season == 0.75 ~ "F")) %>% 
+  dplyr::select(site, year, month, date, season, temp_c) 
+
+lte_temp_by_season_1 <- lte_bottom_temperature %>% 
+  group_by(site, year, season) %>% 
+  summarise(avg_seasonal_temp = mean(temp_c))
+
+avg_seasonal_temp <- merge(lte_bottom_temperature, lte_temp_by_season_1) %>% 
+  group_by(site, date) %>% 
+  summarise(avg_seasonal_temp = mean(avg_seasonal_temp)) %>% 
+  mutate(year = year(date)) %>%
+  mutate(month = month(date)) %>% 
+  dplyr::select(site, year, month, avg_seasonal_temp) %>% 
+  mutate(seas = case_when(month == "12" ~ 1.0,
+                            month == "1" ~ 0.00,
+                            month == "2" ~ 0.00,
+                            month == "3" ~ 0.25,
+                            month == "4" ~ 0.25,
+                            month == "5" ~ 0.25,
+                            month == "6" ~ 0.50,
+                            month == "7" ~ 0.50,
+                            month == "8" ~ 0.50,
+                            month == "9" ~ 0.75,
+                            month == "10" ~ 0.75,
+                            month ==  "11" ~ 0.75)) %>% 
+  mutate(time = year + seas) %>% 
+  dplyr::select(site, year, month, time, avg_seasonal_temp) %>% 
+  group_by(site, year, month, time) %>% 
+  summarise(avg_seasonal_temp = mean(avg_seasonal_temp)) %>% 
+  mutate(seas = time - year) %>% 
+  mutate(season = case_when(
+    seas == 0.00 ~ "W",
+    seas == 1.00 ~ "W",
+    seas == 0.25 ~ "Sp",
+    seas == 0.50 ~ "Su",
+    seas == 0.75 ~ "F")) %>% 
+  dplyr::select(site, year, month, time, season, avg_seasonal_temp)
+
+temp_anomaly <- lte_bottom_temperature %>% 
+  group_by(site, season) %>% 
+  summarise(avg_seasonal_temp_total = mean(temp_c))
+
+temp_an_1 <- merge(lte_bottom_temperature, temp_anomaly) %>% 
+  mutate(temp_anomaly = temp_c - avg_seasonal_temp_total) %>% 
+  group_by(site, year, season, month, date) %>% 
+  summarise(avg_daily_temp = mean(temp_c), avg_daily_temp_anom = mean(temp_anomaly)) %>% 
+  arrange(site, date) %>% 
+  group_by(site, year, season) %>% 
+  summarise(avg_seasonal_anom = mean(avg_daily_temp_anom))
+
+temperature <- merge(avg_seasonal_temp, temp_an_1) %>% 
+  dplyr::select(site, time, avg_seasonal_temp, avg_seasonal_anom) %>% 
+  group_by(site, time) %>% 
+  summarise(avg_seasonal_temp = mean(avg_seasonal_temp),
+            avg_seasonal_anom = mean(avg_seasonal_anom))
+```
+
+## Extracting Benthic Community Data:
+```{r}
+# Urchin density:
+# Removing all data that was not yet available when this analysis was completed (after 2/25/21)
+mobile_abundance <- lte_abundance %>% 
+  filter(mobility == "MOBILE") %>% 
+  filter(treatment == "CONTROL") %>% 
+  dplyr::select(year, month, date, site, transect, treatment, quad, side, survey, count, taxon_phylum, taxon_class, scientific_name) %>% 
+  filter(count >= 0) %>% 
+  filter(quad != "-99999") %>% 
+  mutate(date = ymd(date)) %>% 
+  filter(!(date > "2021-02-25"))
+  
+red_density <- mobile_abundance %>% 
+  filter(survey == "QUAD") %>% 
+  filter(scientific_name == "Mesocentrotus franciscanus") %>% 
+  group_by(site, date) %>% 
+  summarise(red_density = sum(count) / 6) %>% 
+  dplyr::select(site, date, red_density) %>% 
+  arrange(site, date)
+
+purple_density <- mobile_abundance %>% 
+  filter(survey == "QUAD") %>% 
+  filter(scientific_name == "Strongylocentrotus purpuratus") %>% 
+  group_by(site, date) %>% 
+  summarise(purple_density = sum(count) / 6) %>% 
+  dplyr::select(site, date, purple_density) %>% 
+  arrange(site, date) 
+
+urchin_density <- merge(red_density, purple_density) %>% 
+  mutate(urchin_density = red_density + purple_density)
+```
+
+```{r}
+# Sessile animal percent cover: 
+# Percent cover is represented as a fraction: # of occurrences / 20 per segment
+# Removing all data that was not yet available when this analysis was completed (after 2/25/21)
+animalia_cover <- lte_cover %>% 
+  filter(group == "INVERT") %>% 
+  dplyr::select(year, month, date, site, transect, treatment, quad, side, percent_cover, taxon_phylum, taxon_class, scientific_name) %>% 
+  filter(treatment == "CONTROL") %>% 
+  filter(taxon_phylum != "Echinodermata") %>% 
+  filter(taxon_phylum != "Entoprocta") %>% 
+  filter(taxon_phylum != "Arthropoda") %>% 
+  filter(percent_cover >= 0) %>% 
+  mutate(date = ymd(date)) %>% 
+  unite("segment", quad:side, remove = FALSE) %>% 
+  dplyr::select(date, site, segment, percent_cover, taxon_phylum, taxon_class, scientific_name) %>% 
+  mutate(percent_cover = percent_cover / 5) %>% 
+  filter(!(date > "2021-02-25"))
+
+taxa <- animalia_cover %>% 
+  group_by(taxon_phylum, taxon_class, scientific_name) %>% 
+  summarise(cover = sum(percent_cover)) %>% 
+  arrange(taxon_phylum, scientific_name)
+
+## This file was used to create Supplementary Table 1:
+## write.csv(taxa,"~/Library/SPECIFY PATHWAY/taxa.csv", row.names = TRUE)
+
+animal_percent_cover <- animalia_cover %>% 
+  group_by(site, date) %>% 
+  summarise(animal_percent_cover = sum(percent_cover)) %>% 
+  dplyr::select(site, date, animal_percent_cover) %>% 
+  mutate(animal_percent_cover = animal_percent_cover / 80)
+
+## Richness of suspension feeders per treatment
+sessile_species_richness <- animalia_cover %>%
+  mutate(count = percent_cover) %>% 
+  group_by(site, date, scientific_name) %>% 
+  summarise(sum_count = sum(count)) %>% 
+  mutate(sum_count = case_when(
+    sum_count == 0 ~ 0,
+    sum_count >= 1 ~ 1)) %>% 
+  group_by(site, date) %>% 
+  summarise(richness = sum(sum_count)) %>% 
+  filter(!(date > "2021-02-25"))
+
+animal_metrics <- merge(animal_percent_cover, sessile_species_richness)
+
+# Understory algae percent cover 
+algae_cover <- lte_cover %>% 
+  filter(group == "ALGAE") %>% 
+  filter(scientific_name != "crustose coralline agale spp.") %>% 
+  filter(scientific_name != "Macrocystis pyrifera") %>% 
+  dplyr::select(year, month, date, site, transect, treatment, quad, side, percent_cover, taxon_phylum, taxon_class, scientific_name) %>% 
+  filter(treatment == "CONTROL") %>% 
+  filter(percent_cover >= 0) %>% 
+  mutate(date = ymd(date)) %>% 
+  unite("segment", quad:side, remove = FALSE) %>% 
+  dplyr::select(date, site, segment, percent_cover) %>% 
+  mutate(percent_cover = percent_cover / 5) %>% 
+  group_by(site, date) %>% 
+  summarise(algae_percent_cover = sum(percent_cover)) %>% 
+  mutate(algae_percent_cover = algae_percent_cover / 80)  %>% 
+  filter(!(date > "2021-02-25"))
+```
+
+```{r}
+# Macryocystis biomass
+# Removing all data that was not yet available when this analysis was completed (after 2/25/21)
+mapy_biomass <- lte_biomass %>% 
+  filter(scientific_name == "Macrocystis pyrifera") %>%  
+  dplyr::select(year, month, date, site, transect, treatment, scientific_name, wm_gm2) %>% 
+  filter(wm_gm2 >= 0) %>% 
+  filter(treatment == "CONTROL") %>% 
+  mutate(date = ymd(date)) %>% 
+  group_by(site, date) %>% 
+  summarise(kelp_biomass = sum(wm_gm2)) %>% 
+  dplyr::select(site, date, kelp_biomass) %>% 
+  filter(!(date > "2021-02-25"))
+```
+
+```{r}
+# Combining dataframes into a single dataframe:
+community_data1 <- merge(animal_percent_cover, sessile_species_richness)
+community_data2 <- merge(community_data1, algae_cover)
+community_data3 <- merge(community_data2, urchin_density)
+community_data4 <- merge(community_data3, mapy_biomass) %>% 
+  mutate(month = lubridate::month(date),
+         year = lubridate::year(date)) %>% 
+  dplyr::select(site, date, month, year, animal_percent_cover, richness, algae_percent_cover, kelp_biomass, urchin_density) %>% 
+  mutate(seas = case_when(month == "12" ~ 0.90,
+                            month == "1" ~ 0.00,
+                            month == "2" ~ 0.00,
+                            month == "3" ~ 0.25,
+                            month == "4" ~ 0.25,
+                            month == "5" ~ 0.25,
+                            month == "6" ~ 0.50,
+                            month == "7" ~ 0.50,
+                            month == "8" ~ 0.50,
+                            month == "9" ~ 0.75,
+                            month == "10" ~ 0.75,
+                            month ==  "11" ~ 0.75)) %>% 
+  mutate(time = year + seas) %>% 
+  mutate(time = case_when(
+    time == 2008.90 ~ "2009.00",
+    time == 2009.90 ~ "2010.00",
+    time == 2010.90 ~ "2011.00",
+    time == 2011.90 ~ "2012.00",
+    time == 2012.90 ~ "2013.00",
+    time == 2013.90 ~ "2014.00",
+    time == 2014.90 ~ "2015.00",
+    time == 2015.90 ~ "2016.00",
+    time == 2016.90 ~ "2017.00",
+    time == 2017.90 ~ "2018.00",
+    time == 2018.90 ~ "2019.00",
+    time == 2019.90 ~ "2020.00",
+    time == 2020.90 ~ "2021.00",
+    TRUE ~ as.character(as.numeric(time)))) %>% 
+  mutate(time = as.numeric(time)) %>% 
+  mutate(seas = case_when(
+    seas == 0.00 ~ 0.00, 
+    seas == 0.25 ~ 0.25,
+    seas == 0.50 ~ 0.50,
+    seas == 0.75 ~ 0.75,
+    seas == 0.90 ~ 0.00)) %>% 
+  mutate(year = time - seas) %>% 
+  mutate(season = seas) %>% 
+  mutate(season = case_when(
+    season == 0.00 ~ "W",
+    season == 0.25 ~ "Sp",
+    season == 0.50 ~ "Su",
+    season == 0.75 ~ "F"))
+
+lte_seasonal_data <- merge(community_data4, temperature)
+```
+
+## Calculating the Proportion of Heatwave Days Per Site:
+```{r}
+heatwave <- lte_bottom_temperature %>% 
+  group_by(year, month, season, date) %>% 
+  summarise(temp_c = mean(temp_c))
+
+x <- heatwave$temp_c
+quantile(x, probs = c(0.90)) ## 17.68012
+
+hw_aq <- lte_bottom_temperature %>% 
+  filter(site == "AQUE") %>% 
+  group_by(year, month, season, date) %>% 
+  summarise(temp_c = mean(temp_c))
+x_aq <- hw_aq$temp_c
+quantile(x_aq, probs = c(0.90)) ## 17.89542 
+
+hw_mo <- lte_bottom_temperature %>% 
+  filter(site == "MOHK") %>% 
+  group_by(year, month, season, date) %>% 
+  summarise(temp_c = mean(temp_c))
+x_mo <- hw_mo$temp_c
+quantile(x_mo, probs = c(0.90)) ## 17.92656
+
+hw_iv <- lte_bottom_temperature %>% 
+  filter(site == "IVEE") %>% 
+  group_by(year, month, season, date) %>% 
+  summarise(temp_c = mean(temp_c))
+x_iv <- hw_iv$temp_c
+quantile(x_iv, probs = c(0.90)) ## 17.22822
+
+hw_na <- lte_bottom_temperature %>% 
+  filter(site == "NAPL") %>% 
+  group_by(year, month, season, date) %>% 
+  summarise(temp_c = mean(temp_c))
+x_na <- hw_na$temp_c
+quantile(x_na, probs = c(0.90)) ## 17.66908
+
+hw_ca <- lte_bottom_temperature %>% 
+  filter(site == "CARP") %>% 
+  group_by(year, month, season, date) %>% 
+  summarise(temp_c = mean(temp_c))
+x_ca <- hw_ca$temp_c
+quantile(x_ca, probs = c(0.90)) ## 18.12422
+
+#### Arroyo Quemado:
+aque.heatwave <- lte_bottom_temperature %>% 
+  filter(site == "AQUE") %>% 
+  group_by(year, season, month, date) %>% 
+  summarise(temp = mean(temp_c)) %>% 
+  filter(temp >= 17.89542) %>% 
+  arrange(date)
+
+ah1 <- aque.heatwave %>% 
+  filter(date >= "2004-09-07") %>% 
+  filter(date <= "2004-09-18")
+ah2 <- aque.heatwave %>% 
+  filter(date >= "2006-08-04") %>% 
+  filter(date <= "2006-08-12")
+ah4 <- aque.heatwave %>% 
+  filter(date >= "2007-07-28") %>% 
+  filter(date <= "2008-08-02")
+ah5 <- aque.heatwave %>% 
+  filter(date >= "2008-08-03") %>% 
+  filter(date <= "2008-08-13")
+ah3 <- aque.heatwave %>% 
+  filter(date >= "2008-08-15") %>% 
+  filter(date <= "2008-09-06")
+ah6 <- aque.heatwave %>% 
+  filter(date >= "2009-09-08") %>% 
+  filter(date <= "2009-09-14")
+ah7 <- aque.heatwave %>% 
+  filter(date >= "2009-09-19") %>% 
+  filter(date <= "2009-09-28")
+ah8 <- aque.heatwave %>% 
+  filter(date >= "2009-10-14") %>% 
+  filter(date <= "2009-10-19")
+ah9 <- aque.heatwave %>% 
+  filter(date >= "2009-10-23") %>% 
+  filter(date <= "2009-10-27")
+ah10 <- aque.heatwave %>% 
+  filter(date >= "2012-10-15") %>% 
+  filter(date <= "2012-10-22")
+ah11 <- aque.heatwave %>% 
+  filter(date >= "2014-07-04") %>% 
+  filter(date <= "2014-07-11")
+ah12 <- aque.heatwave %>% 
+  filter(date >= "2014-08-26") %>% 
+  filter(date <= "2014-09-01")
+ah13 <- aque.heatwave %>% 
+  filter(date >= "2014-09-06") %>% 
+  filter(date <= "2014-09-16")
+ah14 <- aque.heatwave %>% 
+  filter(date >= "2014-09-19") %>% 
+  filter(date <= "2014-09-24")
+ah15 <- aque.heatwave %>% 
+  filter(date >= "2014-10-03") %>% 
+  filter(date <= "2014-10-24")
+ah16 <- aque.heatwave %>% 
+  filter(date >= "2014-10-28") %>% 
+  filter(date <= "2014-11-01")
+ah17 <- aque.heatwave %>% 
+  filter(date >= "2014-11-04") %>% 
+  filter(date <= "2014-11-21")
+ah18 <- aque.heatwave %>% 
+  filter(date >= "2014-11-26") %>% 
+  filter(date <= "2014-12-12")
+ah19 <- aque.heatwave %>% 
+  filter(date >= "2015-07-25") %>% 
+  filter(date <= "2015-08-07")
+ah20 <- aque.heatwave %>% 
+  filter(date >= "2015-08-20") %>% 
+  filter(date <= "2015-10-29")
+ah25 <- aque.heatwave %>% 
+  filter(date >= "2017-08-06") %>% 
+  filter(date <= "2017-08-15")
+ah21 <- aque.heatwave %>% 
+  filter(date >= "2017-08-31") %>% 
+  filter(date <= "2017-09-06")
+ah27 <- aque.heatwave %>% 
+  filter(date >= "2018-07-08") %>% 
+  filter(date <= "2018-07-22")
+ah28 <- aque.heatwave %>% 
+  filter(date >= "2018-08-02") %>% 
+  filter(date <= "2018-09-02")
+ah29 <- aque.heatwave %>% 
+  filter(date >= "2018-09-07") %>% 
+  filter(date <= "2018-09-17")
+ah30 <- aque.heatwave %>% 
+  filter(date >= "2018-09-25") %>% 
+  filter(date <= "2018-09-30")
+ah32 <- aque.heatwave %>% 
+  filter(date >= "2018-10-08") %>% 
+  filter(date <= "2018-10-15")
+ah31 <- aque.heatwave %>% 
+  filter(date >= "2018-10-17") %>% 
+  filter(date <= "2018-11-15")
+ah33 <- aque.heatwave %>% 
+  filter(date >= "2019-08-22") %>% 
+  filter(date <= "2019-08-28")
+ah34 <- aque.heatwave %>% 
+  filter(date >= "2019-09-15") %>% 
+  filter(date <= "2019-09-19")
+ah35 <- aque.heatwave %>% 
+  filter(date >= "2019-09-21") %>% 
+  filter(date <= "2019-09-28")
+ah22 <- aque.heatwave %>% 
+  filter(date >= "2020-08-21") %>% 
+  filter(date <= "2020-08-25")
+ah23 <- aque.heatwave %>% 
+  filter(date >= "2020-09-28") %>% 
+  filter(date <= "2020-10-22")
+
+aque_heatwave_dates <- bind_rows(ah1, ah2, ah3, ah4, ah5, ah6, ah6, ah7, ah8, ah9, ah10,
+                            ah11, ah12, ah13, ah14, ah15, ah16, ah17, ah18, ah19, ah20,
+                            ah21, ah22, ah23, ah25, ah27, ah28, ah29, ah30,
+                            ah31, ah32, ah33, ah34, ah35) %>% 
+  group_by(year, season) %>% 
+  summarise(days = n()) %>% 
+  ungroup()
+
+aque_non_hw_dates <- data.frame("year" = c(2003, 2003, 2003, 2003, 
+                                         2004, 2004, 2004,
+                                         2005, 2005, 2005, 2005,
+                                         2006, 2006, 2006,
+                                         2007, 2007, 2007,
+                                         2008, 2008, 
+                                         2009, 2009, 2009,
+                                         2010, 2010, 2010, 2010,
+                                         2011, 2011, 2011, 2011,
+                                         2012, 2012, 2012, 
+                                         2013, 2013, 2013, 2013,
+                                         2014, 2014,
+                                         2015,
+                                         2016, 2016, 2016, 2016,
+                                         2017, 2017, 
+                                         2018, 2018,
+                                         2019, 2019,
+                                      2020, 2020, 
+                                      2021, 2021, 2021),
+                              "season" = c("W", "Sp", "Su", "F",
+                                           "W", "Sp", "Su",
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", "F",
+                                           "W", "Sp", "F",
+                                           "W", "Sp",
+                                           "W", "Sp", "Su", 
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", "Su", 
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", 
+                                           "Sp", 
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", 
+                                           "W", "Sp", 
+                                           "W", "Sp",
+                                           "W", "Sp",
+                                           "W", "Sp", "Su"),
+                              "days" = 0)
+
+aque_heat_wave_dates_2 <- bind_rows(aque_heatwave_dates, aque_non_hw_dates) %>% 
+  arrange(year, season) %>% 
+  mutate(total = case_when(
+    season == "W" ~ 90,
+    season == "Sp" ~ 92,
+    season == "Su" ~ 92,
+    season == "F" ~ 91)) %>% 
+  mutate(prop = days / total) %>% 
+  mutate(site = "AQUE")
+
+#### Carpinteria 
+carp.heatwave <- lte_bottom_temperature %>% 
+  filter(site == "CARP") %>% 
+  group_by(year, season, month, date) %>% 
+  summarise(temp = mean(temp_c)) %>% 
+  filter(temp >= 18.12422 ) %>% 
+  arrange(date)
+
+ch1 <- carp.heatwave %>% 
+  filter(date >= "2003-07-13") %>% 
+  filter(date <= "2003-07-18")
+ch2 <- carp.heatwave %>% 
+  filter(date >= "2003-07-20") %>% 
+  filter(date <= "2003-07-24")
+ch6 <- carp.heatwave %>% 
+  filter(date >= "2004-09-05") %>% 
+  filter(date <= "2004-09-19")
+ch8 <- carp.heatwave %>% 
+  filter(date >= "2004-10-13") %>% 
+  filter(date <= "2004-10-19")
+ch11 <- carp.heatwave %>% 
+  filter(date >= "2006-07-27") %>% 
+  filter(date <= "2006-07-31")
+ch15 <- carp.heatwave %>% 
+  filter(date >= "2008-07-31") %>% 
+  filter(date <= "2008-08-07")
+ch16 <- carp.heatwave %>% 
+  filter(date >= "2008-08-15") %>% 
+  filter(date <= "2008-08-24")
+ch17 <- carp.heatwave %>% 
+  filter(date >= "2008-08-30") %>% 
+  filter(date <= "2008-09-04")
+ch18 <- carp.heatwave %>% 
+  filter(date >= "2009-09-05") %>% 
+  filter(date <= "2009-09-24")
+ch19 <- carp.heatwave %>% 
+  filter(date >= "2009-09-29") %>% 
+  filter(date <= "2009-10-04")
+ch20 <- carp.heatwave %>% 
+  filter(date >= "2009-10-16") %>% 
+  filter(date <= "2009-10-27")
+ch21 <- carp.heatwave %>% 
+  filter(date >= "2012-10-07") %>% 
+  filter(date <= "2012-10-24")
+ch23 <- carp.heatwave %>% 
+  filter(date >= "2014-06-26") %>% 
+  filter(date <= "2014-07-11")
+ch24 <- carp.heatwave %>% 
+  filter(date >= "2014-07-17") %>% 
+  filter(date <= "2014-07-21")
+ch25 <- carp.heatwave %>% 
+  filter(date >= "2014-08-23") %>% 
+  filter(date <= "2014-09-19")
+ch26 <- carp.heatwave %>% 
+  filter(date >= "2014-09-21") %>% 
+  filter(date <= "2014-12-11")
+ch27 <- carp.heatwave %>% 
+  filter(date >= "2015-07-20") %>% 
+  filter(date <= "2015-07-27")
+ch28 <- carp.heatwave %>% 
+  filter(date >= "2015-07-29") %>% 
+  filter(date <= "2015-08-06")
+ch29 <- carp.heatwave %>% 
+  filter(date >= "2015-08-19") %>% 
+  filter(date <= "2015-11-03")
+ch31 <- carp.heatwave %>% 
+  filter(date >= "2016-06-27") %>% 
+  filter(date <= "2016-07-01")
+ch32 <- carp.heatwave %>% 
+  filter(date >= "2016-07-14") %>% 
+  filter(date <= "2016-07-25")
+ch33 <- carp.heatwave %>% 
+  filter(date >= "2016-08-08") %>% 
+  filter(date <= "2016-08-13")
+ch34 <- carp.heatwave %>% 
+  filter(date >= "2016-09-04") %>% 
+  filter(date <= "2016-09-11")
+ch35 <- carp.heatwave %>% 
+  filter(date >= "2016-09-19") %>% 
+  filter(date <= "2016-09-24")
+ch36 <- carp.heatwave %>% 
+  filter(date >= "2016-09-28") %>% 
+  filter(date <= "2016-10-02")
+ch37 <- carp.heatwave %>% 
+  filter(date >= "2017-08-13") %>% 
+  filter(date <= "2017-08-17")
+ch39 <- carp.heatwave %>% 
+  filter(date >= "2017-09-04") %>% 
+  filter(date <= "2017-09-12")
+ch40 <- carp.heatwave %>% 
+  filter(date >= "2017-10-03") %>% 
+  filter(date <= "2017-10-20")
+ch41 <- carp.heatwave %>% 
+  filter(date >= "2018-06-26") %>% 
+  filter(date <= "2018-06-30")
+ch42 <- carp.heatwave %>% 
+  filter(date >= "2018-07-11") %>% 
+  filter(date <= "2018-07-15")
+ch44 <- carp.heatwave %>% 
+  filter(date >= "2018-08-06") %>% 
+  filter(date <= "2018-09-02")
+ch45 <- carp.heatwave %>% 
+  filter(date >= "2018-09-09") %>% 
+  filter(date <= "2018-09-25")
+ch46 <- carp.heatwave %>% 
+  filter(date >= "2018-10-03") %>% 
+  filter(date <= "2018-10-20")
+ch47 <- carp.heatwave %>% 
+  filter(date >= "2018-10-26") %>% 
+  filter(date <= "2018-11-29")
+ch48 <- carp.heatwave %>% 
+  filter(date >= "2019-09-17") %>% 
+  filter(date <= "2019-10-03")
+ch49 <- carp.heatwave %>% 
+  filter(date >= "2020-08-21") %>% 
+  filter(date <= "2020-08-27")
+ch50 <- carp.heatwave %>% 
+  filter(date >= "2020-09-26") %>% 
+  filter(date <= "2020-10-25")
+
+carp_heatwave_dates <- bind_rows(ch1, ch2, ch6, ch6, ch8,
+                            ch11, ch15, ch16, ch17, ch18, ch19, ch20,
+                            ch21, ch23, ch24, ch25, ch26, ch27, ch28, ch29, 
+                            ch31, ch32, ch33, ch34, ch35, ch36, ch37, ch39, ch40,
+                            ch41, ch42, ch44, ch45, ch46, ch47, ch48, ch49, ch50) %>% 
+  group_by(year, season) %>% 
+  summarise(days = n()) %>% 
+  ungroup()
+
+carp_non_hw_dates <- data.frame("year" = c(2003, 2003, 2003,
+                                         2004, 2004, 2004,
+                                         2005, 2005, 2005, 2005, 
+                                         2006, 2006, 2006,
+                                         2007, 2007, 2007, 2007,
+                                         2008, 2008, 
+                                         2009, 2009, 2009,
+                                         2010, 2010, 2010, 2010,
+                                         2011, 2011, 2011, 2011,
+                                         2012, 2012, 2012, 
+                                         2013, 2013, 2013, 2013,
+                                         2014, 2014,
+                                         2015,
+                                         2016, 2016,
+                                         2017, 2017, 
+                                         2018, 2018,
+                                         2019, 2019, 2019,
+                                         2020, 2020,
+                                         2021, 2021, 2021),
+                              "season" = c("W", "Sp", "F", 
+                                           "W", "Sp", "Su",
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", "F",
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp",
+                                           "W", "Sp", "Su", 
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", "Su", 
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", 
+                                           "Sp", 
+                                           "W", "Sp",
+                                           "W", "Sp", 
+                                           "W", "Sp", 
+                                           "W", "Sp",  "Su",
+                                           "W", "Sp",
+                                           "W", "Sp", "Su"),
+                              "days" = 0)
+
+carp_heat_wave_dates_2 <- bind_rows(carp_heatwave_dates, carp_non_hw_dates) %>% 
+  arrange(year, season) %>% 
+  mutate(total = case_when(
+    season == "W" ~ 90,
+    season == "Sp" ~ 92,
+    season == "Su" ~ 92,
+    season == "F" ~ 91)) %>% 
+  mutate(prop = days / total) %>% 
+  mutate(site = "CARP")
+
+#### Isla Vista
+ivee.heatwave <- lte_bottom_temperature %>% 
+  filter(site == "IVEE") %>% 
+  group_by(year, season, month, date) %>% 
+  summarise(temp = mean(temp_c)) %>% 
+  filter(temp >= 17.22822) %>% 
+  arrange(date)
+
+ih1 <- ivee.heatwave %>% 
+  filter(date >= "2004-09-06") %>% 
+  filter(date <= "2004-09-19")
+ih1_1 <- ivee.heatwave %>% 
+  filter(date >= "2004-10-07") %>% 
+  filter(date <= "2004-10-14")
+ih1_2 <- ivee.heatwave %>% 
+  filter(date >= "2004-10-16") %>% 
+  filter(date <= "2004-10-28")
+ih1_3 <- ivee.heatwave %>% 
+  filter(date >= "2004-10-30") %>% 
+  filter(date <= "2004-11-04")
+ih1_4 <- ivee.heatwave %>% 
+  filter(date >= "2008-08-03") %>% 
+  filter(date <= "2008-08-07")
+ih2 <- ivee.heatwave %>% 
+  filter(date >= "2008-08-20") %>% 
+  filter(date <= "2008-08-27")
+ih3 <- ivee.heatwave %>% 
+  filter(date >= "2009-10-12") %>% 
+  filter(date <= "2009-10-19")
+ih4 <- ivee.heatwave %>% 
+  filter(date >= "2009-10-22") %>% 
+  filter(date <= "2009-10-27")
+ih5 <- ivee.heatwave %>% 
+  filter(date >= "2012-10-04") %>% 
+  filter(date <= "2012-10-23")
+ih6 <- ivee.heatwave %>% 
+  filter(date >= "2013-10-22") %>% 
+  filter(date <= "2013-10-26")
+ih7 <- ivee.heatwave %>% 
+  filter(date >= "2014-06-25") %>% 
+  filter(date <= "2014-06-29")
+ih7_1 <- ivee.heatwave %>% 
+  filter(date >= "2014-07-01") %>% 
+  filter(date <= "2014-07-11")
+ih8 <- ivee.heatwave %>% 
+  filter(date >= "2014-07-14") %>% 
+  filter(date <= "2014-07-20")
+ih9 <- ivee.heatwave %>% 
+  filter(date >= "2014-09-06") %>% 
+  filter(date <= "2014-09-27")
+ih10 <- ivee.heatwave %>% 
+  filter(date >= "2014-09-30") %>% 
+  filter(date <= "2014-12-15")
+ih12 <- ivee.heatwave %>% 
+  filter(date >= "2015-08-01") %>% 
+  filter(date <= "2015-08-05")
+ih13 <- ivee.heatwave %>% 
+  filter(date >= "2015-08-21") %>% 
+  filter(date <= "2015-11-03")
+ih14 <- ivee.heatwave %>% 
+  filter(date >= "2015-12-04") %>% 
+  filter(date <= "2015-12-11")
+ih14_1 <- ivee.heatwave %>% 
+  filter(date >= "2016-09-06") %>% 
+  filter(date <= "2016-09-10")
+ih14_2 <- ivee.heatwave %>% 
+  filter(date >= "2016-09-17") %>% 
+  filter(date <= "2016-09-22")
+ih14_3 <- ivee.heatwave %>% 
+  filter(date >= "2017-09-04") %>% 
+  filter(date <= "2017-09-08")
+ih15 <- ivee.heatwave %>% 
+  filter(date >= "2017-10-04") %>% 
+  filter(date <= "2017-10-19")
+ih16 <- ivee.heatwave %>% 
+  filter(date >= "2018-08-06") %>% 
+  filter(date <= "2018-09-02")
+ih17 <- ivee.heatwave %>% 
+  filter(date >= "2018-09-09") %>% 
+  filter(date <= "2018-09-20")
+ih18 <- ivee.heatwave %>% 
+  filter(date >= "2018-09-22") %>% 
+  filter(date <= "2018-09-28")
+ih19 <- ivee.heatwave %>% 
+  filter(date >= "2018-10-03") %>% 
+  filter(date <= "2018-10-18")
+ih19_1 <- ivee.heatwave %>% 
+  filter(date >= "2018-10-26") %>% 
+  filter(date <= "2018-11-01")
+ih20 <- ivee.heatwave %>% 
+  filter(date >= "2018-11-03") %>% 
+  filter(date <= "2018-11-23")
+ih21 <- ivee.heatwave %>% 
+  filter(date >= "2019-09-14") %>% 
+  filter(date <= "2019-10-31")
+ih22 <- ivee.heatwave %>% 
+  filter(date >= "2020-08-21") %>% 
+  filter(date <= "2020-08-28")
+ih23 <- ivee.heatwave %>% 
+  filter(date >= "2020-09-25") %>% 
+  filter(date <= "2020-10-24")
+
+ivee_heatwave_dates <- bind_rows(ih1, ih1_1, ih1_2, ih1_3,
+                                 ih1_4, ih2, ih3, ih4, ih5, ih6, ih7, ih7_1, ih8, ih9, ih10,
+                                ih12, ih13, ih14, 
+                                ih14_1, ih14_2, ih14_3, 
+                                ih15, ih16, ih17, ih18, ih19, 
+                                ih19_1, ih20, ih21, ih22, ih23) %>% 
+  group_by(year, season) %>% 
+  summarise(days = n()) %>% 
+  ungroup()
+
+ivee_non_hw_dates <- data.frame("year" = c(2003, 2003, 2003, 2003,  
+                                         2004, 2004, 2004,
+                                         2005, 2005, 2005, 2005,
+                                         2006, 2006, 2006, 2006,
+                                         2007, 2007, 2007, 2007,
+                                         2008, 2008, 2008, 
+                                         2009, 2009, 2009,
+                                         2010, 2010, 2010, 2010,
+                                         2011, 2011, 2011, 2011,
+                                         2012, 2012, 2012, 
+                                         2013, 2013, 2013, 
+                                         2014, 2014,
+                                         2015,
+                                         2016, 2016, 
+                                         2017, 2017, 2017,
+                                         2018, 2018,
+                                         2019, 2019, 2019,
+                                         2020, 2020,
+                                      2021, 2021, 2021),
+                              "season" = c("W", "Sp", "Su", "F",
+                                           "W", "Sp", "Su",
+                                           "W", "Sp",  "Su", "F",
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp",  "Su", "F",
+                                           "W", "Sp", "F",
+                                           "W", "Sp", "Su", 
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", "Su", 
+                                           "W", "Sp", "Su", 
+                                           "W", "Sp", 
+                                           "Sp", 
+                                           "Sp", "Su", 
+                                           "W", "Sp", "Su",
+                                           "W", "Sp", 
+                                           "W", "Sp", "Su",
+                                           "W", "Sp",
+                                           "W", "Sp", "Su"),
+                              "days" = 0)
+
+ivee_heat_wave_dates_2 <- bind_rows(ivee_heatwave_dates, ivee_non_hw_dates) %>% 
+  arrange(year, season) %>% 
+  mutate(total = case_when(
+    season == "W" ~ 90,
+    season == "Sp" ~ 92,
+    season == "Su" ~ 92,
+    season == "F" ~ 91)) %>% 
+  mutate(prop = days / total) %>% 
+  mutate(site = "IVEE")
+
+#### Mohawk 
+mohk.heatwave <- lte_bottom_temperature %>% 
+  filter(site == "MOHK") %>% 
+  group_by(year, season, month, date) %>% 
+  summarise(temp = mean(temp_c)) %>% 
+  filter(temp >= 17.92656) %>% 
+  arrange(date)
+
+mh1 <- mohk.heatwave %>% 
+  filter(date >= "2003-07-18") %>% 
+  filter(date <= "2003-07-25")
+mh3 <- mohk.heatwave %>% 
+  filter(date >= "2004-09-05") %>% 
+  filter(date <= "2004-09-19")
+mh5 <- mohk.heatwave %>% 
+  filter(date >= "2004-10-16") %>% 
+  filter(date <= "2004-10-22")
+mh7 <- mohk.heatwave %>% 
+  filter(date >= "2006-07-28") %>% 
+  filter(date <= "2006-08-02")
+mh10 <- mohk.heatwave %>% 
+  filter(date >= "2008-07-30") %>% 
+  filter(date <= "2008-08-06")
+mh11 <- mohk.heatwave %>% 
+  filter(date >= "2008-08-20") %>% 
+  filter(date <= "2008-08-28")
+mh12 <- mohk.heatwave %>% 
+  filter(date >= "2008-08-30") %>% 
+  filter(date <= "2008-09-05")
+mh13 <- mohk.heatwave %>% 
+  filter(date >= "2009-09-05") %>% 
+  filter(date <= "2009-09-10")
+mh14 <- mohk.heatwave %>% 
+  filter(date >= "2009-09-15") %>% 
+  filter(date <= "2009-09-26")
+mh15 <- mohk.heatwave %>% 
+  filter(date >= "2009-09-28") %>% 
+  filter(date <= "2009-10-03")
+mh16 <- mohk.heatwave %>% 
+  filter(date >= "2009-10-12") %>% 
+  filter(date <= "2009-10-19")
+mh17 <- mohk.heatwave %>% 
+  filter(date >= "2009-10-21") %>% 
+  filter(date <= "2009-10-27")
+mh18 <- mohk.heatwave %>% 
+  filter(date >= "2012-10-07") %>% 
+  filter(date <= "2012-10-23")
+mh19 <- mohk.heatwave %>% 
+  filter(date >= "2013-07-02") %>% 
+  filter(date <= "2013-07-07")
+mh20 <- mohk.heatwave %>% 
+  filter(date >= "2014-06-25") %>% 
+  filter(date <= "2014-07-11")
+mh20_1 <- mohk.heatwave %>% 
+  filter(date >= "2014-07-13") %>% 
+  filter(date <= "2014-07-25")
+mh21 <- mohk.heatwave %>% 
+  filter(date >= "2014-08-24") %>% 
+  filter(date <= "2014-09-01") 
+mh21_1 <- mohk.heatwave %>% 
+  filter(date >= "2014-09-03") %>% 
+  filter(date <= "2014-09-20") 
+mh21_2 <- mohk.heatwave %>% 
+  filter(date >= "2014-09-22") %>% 
+  filter(date <= "2014-09-27") 
+mh22 <- mohk.heatwave %>% 
+  filter(date >= "2014-09-30") %>% 
+  filter(date <= "2014-11-26")
+mh22_1 <- mohk.heatwave %>% 
+  filter(date >= "2014-11-26") %>% 
+  filter(date <= "2014-12-12") 
+mh23 <- mohk.heatwave %>% 
+  filter(date >= "2015-07-22") %>% 
+  filter(date <= "2015-08-06")
+mh25 <- mohk.heatwave %>% 
+  filter(date >= "2015-08-18") %>% 
+  filter(date <= "2015-11-03")
+mh26 <- mohk.heatwave %>% 
+  filter(date >= "2015-12-03") %>% 
+  filter(date <= "2015-12-14")
+mh28 <- mohk.heatwave %>% 
+  filter(date >= "2016-09-05") %>% 
+  filter(date <= "2016-09-11")
+mh29 <- mohk.heatwave %>% 
+  filter(date >= "2016-09-16") %>% 
+  filter(date <= "2016-09-22")
+mh31 <- mohk.heatwave %>% 
+  filter(date >= "2018-06-24") %>% 
+  filter(date <= "2018-06-29")
+mh32 <- mohk.heatwave %>% 
+  filter(date >= "2018-07-12") %>% 
+  filter(date <= "2018-07-17")
+mh33 <- mohk.heatwave %>% 
+  filter(date >= "2018-08-06") %>% 
+  filter(date <= "2018-09-02")
+mh34 <- mohk.heatwave %>% 
+  filter(date >= "2018-09-08") %>% 
+  filter(date <= "2018-09-27")
+mh35 <- mohk.heatwave %>% 
+  filter(date >= "2018-10-03") %>% 
+  filter(date <= "2018-10-19")
+mh35_1 <- mohk.heatwave %>% 
+  filter(date >= "2018-10-25") %>% 
+  filter(date <= "2018-11-23")
+mh37 <- mohk.heatwave %>% 
+  filter(date >= "2019-09-17") %>% 
+  filter(date <= "2019-09-28")
+mh38 <- mohk.heatwave %>% 
+  filter(date >= "2020-08-21") %>% 
+  filter(date <= "2020-08-27")
+mh39 <- mohk.heatwave %>% 
+  filter(date >= "2020-09-26") %>% 
+  filter(date <= "2020-10-23")
+
+mohk_heatwave_dates <- bind_rows(mh1,  mh3,  mh5,  mh7, mh10,
+                                 mh11, mh12, mh13, mh14, mh15, mh16, mh17, mh18, mh19, mh20,
+                                 mh20_1, mh21_1, mh21_2, mh22_1, mh35_1,
+                                 mh21, mh22, mh23,  mh25, mh26, mh28, mh29,
+                                 mh31, mh32, mh33, mh34, mh35,  mh37, mh38, mh39) %>% 
+  group_by(year, season) %>% 
+  summarise(days = n()) %>% 
+  ungroup()
+
+mohk_non_hw_dates <- data.frame("year" = c(2003, 2003, 2003,   
+                                         2004, 2004, 2004,
+                                         2005, 2005, 2005, 2005,
+                                         2006, 2006, 2006,
+                                         2007, 2007, 2007, 2007, 
+                                         2008, 2008,  
+                                         2009, 2009, 2009,
+                                         2010, 2010, 2010, 2010,
+                                         2011, 2011, 2011, 2011,
+                                         2012, 2012, 2012, 
+                                         2013, 2013, 2013, 
+                                         2014, 2014,
+                                         2015,
+                                         2016, 2016,
+                                         2017, 2017, 2017, 2017,
+                                         2018, 2018,
+                                         2019, 2019, 2019, 
+                                      2020, 2020,
+                                      2021, 2021, 2021),
+                              "season" = c("W", "Sp",  "F",
+                                           "W", "Sp", "Su",
+                                           "W", "Sp",  "Su", "F",
+                                           "W", "Sp", "F",
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", 
+                                           "W", "Sp", "Su", 
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", "Su", 
+                                           "W", "Sp",  "F",
+                                           "W", "Sp", 
+                                           "Sp", 
+                                           "Sp", "Su",
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", 
+                                           "W", "Sp", "Su",
+                                           "W", "Sp",
+                                           "W", "Sp", "Su"),
+                              "days" = 0)
+
+mohk_heat_wave_dates_2 <- bind_rows(mohk_heatwave_dates, mohk_non_hw_dates) %>% 
+  arrange(year, season) %>% 
+  mutate(total = case_when(
+    season == "W" ~ 90,
+    season == "Sp" ~ 92,
+    season == "Su" ~ 92,
+    season == "F" ~ 91)) %>% 
+  mutate(prop = days / total) %>% 
+  mutate(site = "MOHK")
+
+#### Naples
+napl.heatwave <- lte_bottom_temperature %>% 
+  filter(site == "NAPL") %>% 
+  group_by(year, season, month, date) %>% 
+  summarise(temp = mean(temp_c)) %>% 
+  filter(temp >= 17.66908) %>% 
+  arrange(date)
+
+nh1 <- napl.heatwave %>% 
+  filter(date >= "2004-08-27") %>% 
+  filter(date <= "2004-09-01")
+nh2 <- napl.heatwave %>% 
+  filter(date >= "2004-09-06") %>% 
+  filter(date <= "2004-09-19")
+nh3 <- napl.heatwave %>% 
+  filter(date >= "2006-07-25") %>% 
+  filter(date <= "2006-07-29")
+nh3_1 <- napl.heatwave %>% 
+  filter(date >= "2007-07-27") %>% 
+  filter(date <= "2007-08-01")
+nh3_2 <- napl.heatwave %>% 
+  filter(date >= "2007-09-08") %>% 
+  filter(date <= "2007-09-12")
+nh4 <- napl.heatwave %>% 
+  filter(date >= "2009-09-15") %>% 
+  filter(date <= "2009-09-27")
+nh5 <- napl.heatwave %>% 
+  filter(date >= "2009-10-12") %>% 
+  filter(date <= "2009-10-19")
+nh6 <- napl.heatwave %>% 
+  filter(date >= "2009-10-23") %>% 
+  filter(date <= "2009-10-27")
+nh6_1 <- napl.heatwave %>% 
+  filter(date >= "2012-08-26") %>% 
+  filter(date <= "2012-08-31")
+nh7 <- napl.heatwave %>% 
+  filter(date >= "2012-10-05") %>% 
+  filter(date <= "2012-10-12")
+nh7_1 <- napl.heatwave %>% 
+  filter(date >= "2012-10-14") %>% 
+  filter(date <= "2012-10-23")
+nh8 <- napl.heatwave %>% 
+  filter(date >= "2014-06-25") %>% 
+  filter(date <= "2014-06-29")
+nh9 <- napl.heatwave %>% 
+  filter(date >= "2014-07-02") %>% 
+  filter(date <= "2014-07-09")
+nh10 <- napl.heatwave %>% 
+  filter(date >= "2014-07-11") %>% 
+  filter(date <= "2014-07-26")
+nh11 <- napl.heatwave %>% 
+  filter(date >= "2014-08-24") %>% 
+  filter(date <= "2014-09-04")
+nh12 <- napl.heatwave %>% 
+  filter(date >= "2014-09-06") %>% 
+  filter(date <= "2014-09-17")
+nh13 <- napl.heatwave %>% 
+  filter(date >= "2014-09-20") %>% 
+  filter(date <= "2014-09-27")
+nh14 <- napl.heatwave %>% 
+  filter(date >= "2014-09-30") %>% 
+  filter(date <= "2014-11-22")
+nh16 <- napl.heatwave %>% 
+  filter(date >= "2014-11-24") %>% 
+  filter(date <= "2014-12-13")
+nh17 <- napl.heatwave %>% 
+  filter(date >= "2015-07-21") %>% 
+  filter(date <= "2015-07-26")
+nh18 <- napl.heatwave %>% 
+  filter(date >= "2015-07-28") %>% 
+  filter(date <= "2015-08-06")
+nh19 <- napl.heatwave %>% 
+  filter(date >= "2015-08-18") %>% 
+  filter(date <= "2015-11-02")
+nh20 <- napl.heatwave %>% 
+  filter(date >= "2015-12-04") %>% 
+  filter(date <= "2015-12-11")
+nh21 <- napl.heatwave %>% 
+  filter(date >= "2016-08-09") %>% 
+  filter(date <= "2016-08-13")
+nh22 <- napl.heatwave %>% 
+  filter(date >= "2016-09-06") %>% 
+  filter(date <= "2016-09-11")
+nh23 <- napl.heatwave %>% 
+  filter(date >= "2017-08-06") %>% 
+  filter(date <= "2017-08-11")
+nh24 <- napl.heatwave %>% 
+  filter(date >= "2017-08-26") %>% 
+  filter(date <= "2017-08-31")
+nh25 <- napl.heatwave %>% 
+  filter(date >= "2017-10-05") %>% 
+  filter(date <= "2017-10-19")
+nh26_1 <- napl.heatwave %>% 
+  filter(date >= "2018-06-25") %>% 
+  filter(date <= "2018-06-29")
+nh26 <- napl.heatwave %>% 
+  filter(date >= "2018-07-12") %>% 
+  filter(date <= "2018-07-16")
+nh28 <- napl.heatwave %>% 
+  filter(date >= "2018-08-06") %>% 
+  filter(date <= "2018-09-02")
+nh29 <- napl.heatwave %>% 
+  filter(date >= "2018-09-06") %>% 
+  filter(date <= "2018-09-19")
+nh30 <- napl.heatwave %>% 
+  filter(date >= "2018-09-24") %>% 
+  filter(date <= "2018-10-01")
+nh31 <- napl.heatwave %>% 
+  filter(date >= "2018-10-03") %>% 
+  filter(date <= "2018-10-19")
+nh32 <- napl.heatwave %>% 
+  filter(date >= "2018-10-23") %>% 
+  filter(date <= "2018-11-23")
+nh33 <- napl.heatwave %>% 
+  filter(date >= "2019-08-21") %>% 
+  filter(date <= "2019-08-26")
+nh34 <- napl.heatwave %>% 
+  filter(date >= "2019-09-15") %>% 
+  filter(date <= "2019-09-28")
+nh35 <- napl.heatwave %>% 
+  filter(date >= "2020-09-26") %>% 
+  filter(date <= "2020-10-15")
+
+napl_heatwave_dates <- bind_rows(nh1, nh2, nh3, nh3_1, nh3_2, nh4, nh5, nh6, nh6_1, nh7, nh7_1,
+                                 nh8, nh9, nh10,
+                                 nh11, nh12, nh13, nh14, nh16, nh17, nh18, nh19, nh20,
+                                 nh21, nh22, nh23, nh24, nh25, nh26, nh26_1, nh28, nh29, nh30,
+                                 nh31, nh32, nh33, nh34, nh35) %>% 
+  group_by(year, season) %>% 
+  summarise(days = n()) %>% 
+  ungroup()
+
+napl_non_hw_dates <- data.frame("year" = c(2003, 2003, 2003, 2003,   
+                                         2004, 2004, 
+                                         2005, 2005, 2005, 2005,
+                                         2006, 2006, 2006, 
+                                         2007, 2007, 2007, 
+                                         2008, 2008, 2008, 2008,
+                                         2009, 2009, 2009,
+                                         2010, 2010, 2010, 2010,
+                                         2011, 2011, 2011, 2011,
+                                         2012, 2012, 
+                                         2013, 2013, 2013, 2013,
+                                         2014, 2014,
+                                         2015,
+                                         2016, 
+                                         2017, 2017, 
+                                         2018, 2018,
+                                         2019, 2019, 
+                                      2020, 2020, 2020,
+                                      2021, 2021, 2021),
+                              "season" = c("W", "Sp", "Su", "F",
+                                           "W", "Sp", 
+                                           "W", "Sp",  "Su", "F",
+                                           "W", "Sp",  "F",
+                                           "W", "Sp", "F",
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", "Su", 
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", 
+                                           "W", "Sp", "Su", "F",
+                                           "W", "Sp", 
+                                           "Sp", 
+                                           "Sp", 
+                                           "W", "Sp", 
+                                           "W", "Sp", 
+                                           "W", "Sp", 
+                                           "W", "Sp", "Su",
+                                           "W", "Sp", "Su"),
+                              "days" = 0)
+
+napl_heat_wave_dates_2 <- bind_rows(napl_heatwave_dates, napl_non_hw_dates) %>% 
+  arrange(year, season) %>% 
+  mutate(total = case_when(
+    season == "W" ~ 90,
+    season == "Sp" ~ 92,
+    season == "Su" ~ 92,
+    season == "F" ~ 91)) %>% 
+  mutate(prop = days / total) %>% 
+  mutate(site = "NAPL")
+
+heatwave_site <- bind_rows(aque_heat_wave_dates_2, carp_heat_wave_dates_2, ivee_heat_wave_dates_2, mohk_heat_wave_dates_2, napl_heat_wave_dates_2) %>% 
+  dplyr::select(site, year, season, days, prop, total)
+
+```
+
+## Preparing Dataframes for Structural Equation Modeling:
+```{r}
+community_site <- merge(lte_seasonal_data, heatwave_site)
+
+## Reading in chl-a file from "Michaud_et_al_Coms_Bio_Chl-a_Code.Rmd"
+
+chl <- read.csv("chl_seasonal.csv") %>% 
+  dplyr::select(site, year, season, chl, chl_anom)
+
+modeling_data <- merge(community_site, chl) %>% 
+  group_by(site, year, season, time) %>% 
+  summarise(apc = mean(animal_percent_cover),
+         richness = mean(richness),
+         algae = mean(algae_percent_cover),
+         urchins = mean(urchin_density),
+         kelp = mean(kelp_biomass),
+         prop = mean(prop),
+         chl = mean(chl),
+         chl_anom = mean(chl_anom)) 
+
+ggplot(data = modeling_data, aes(x = apc)) +
+  geom_histogram()  ## right skewed, SQRT transformation
+ggplot(data = modeling_data, aes(x = richness)) +
+  geom_histogram()  ## right skewed, SQRT transformation
+ggplot(data = modeling_data, aes(x = algae)) +
+  geom_histogram()  ## right skewed, SQRT transformation
+ggplot(data = modeling_data, aes(x = kelp)) +
+  geom_histogram()  ## heavily right skewed, log transformation
+ggplot(data = modeling_data, aes(x = chl)) +
+  geom_histogram()  ## right skewed, SQRT transformation
+
+transformed <- modeling_data %>% 
+  mutate(
+    apc = sqrt(apc),
+    richness = sqrt(richness),
+    algae = sqrt(algae),
+    urchins = log(urchins + 1),
+    kelp = log(kelp + 1),
+    chl = log(chl + 1)) %>% 
+  ungroup()
+
+# Checking that transformations of data have improved normality 
+ggplot(data = transformed, aes(x = apc)) +
+  geom_histogram() 
+ggplot(data = transformed, aes(x = richness)) +
+  geom_histogram()  
+ggplot(data = transformed, aes(x = algae)) +
+  geom_histogram()  
+ggplot(data = transformed, aes(x = kelp)) +
+  geom_histogram() 
+ggplot(data = transformed, aes(x = chl)) +
+  geom_histogram()  
+
+# scaling all numerical variables to comply with the requirements of SEM
+data.sem <- as.data.frame(cbind(transformed[,1:4],scale(transformed[,5:12]))) 
+```
+
+## Piecewise Structural Equation Modeling:
+
+```{r}
+## FULL Animal cover model with site as a random effect
+Full_animal_cover_sem <- psem(
+  lme(apc ~  prop + chl + kelp + algae + season + urchins,
+      random = ~ 1|site, data = data.sem),
+  lme(chl ~ prop + season,
+      random = ~ 1|site, data = data.sem),
+  lme(algae ~ prop + season + kelp + urchins,
+      random = ~ 1|site, data = data.sem),
+  lme(kelp ~   urchins + chl + season + prop,
+      random = ~ 1|site, data = data.sem),
+  lme(urchins ~ prop + season,
+      random = ~ 1|site, data = data.sem),
+  lme(prop ~ season,
+      random = ~ 1|site, data = data.sem))
+summary(Full_animal_cover_sem)
+#This is the full model with an AIC of 98.569
+```
+#### Final SEM model for animal cover:
+```{r}
+##Animal cover model with the proportion of heatwave days and chl-a concentration in the season of sampling  
+best_animal_cover_sem <- psem(
+  lme(apc ~  prop + chl + kelp + algae + season + urchins,
+      random = ~ 1|site, data = data.sem),
+  lme(chl ~ prop + season,
+      random = ~ 1|site, data = data.sem),
+  lme(algae ~ prop + season,
+      random = ~ 1|site, data = data.sem),
+  lme(kelp ~   urchins + chl + season,
+      random = ~ 1|site, data = data.sem),
+  lme(urchins ~ prop,
+      random = ~ 1|site, data = data.sem),
+  lme(prop ~ season, 
+      random = ~ 1|site, data = data.sem))
+summary(best_animal_cover_sem)
+#This is the best fitting model with an AIC of 90.837 and GGoF: Fisher's C= 4.837, P-value = 0.963 df = 12 
+```
+
+```{r}
+## FULL Animal species density model  
+Full_animal_sd_sem <- psem(
+  lme(richness ~  prop + chl + kelp + algae + season + urchins,
+      random = ~ 1|site, data = data.sem),
+  lme(chl ~ prop + season,
+      random = ~ 1|site, data = data.sem),
+  lme(algae ~ prop + season + kelp + urchins,
+      random = ~ 1|site, data = data.sem),
+  lme(kelp ~   urchins + chl + season + prop,
+      random = ~ 1|site, data = data.sem),
+  lme(urchins ~ prop + season,
+      random = ~ 1|site, data = data.sem),
+  lme(prop ~ season,
+      random = ~ 1|site, data = data.sem))
+summary(Full_animal_sd_sem)
+#This is the full model with an AIC of 98.569
+```
+
+#### Final Animal Species Density Model:
+```{r}
+## Animal species density model 
+animal_sd_sem <- psem(
+  lme(richness ~  prop + chl + kelp + algae + season + urchins,
+      random = ~ 1|site, data = data.sem),
+  lme(chl ~ prop + season,
+      random = ~ 1|site, data = data.sem),
+  lme(algae ~ prop + season,
+      random = ~ 1|site, data = data.sem),
+  lme(kelp ~   urchins + chl + season,
+      random = ~ 1|site, data = data.sem),
+  lme(urchins ~ prop,
+      random = ~ 1|site, data = data.sem),
+  lme(prop ~ season,
+      random = ~ 1|site, data = data.sem))
+summary(animal_sd_sem)
+#This is the best model with an AIC of 90.837, Fisher's C = 4.837, p = 0.963, df = 12
+```
+
+## Figure 1:
+```{r}
+## Average temperature and chl-a anomly:
+anom <- lte_seasonal_data %>% 
+  dplyr::select(site, year, season, time, avg_seasonal_temp, avg_seasonal_anom)
+
+anomalies <- merge(anom, chl) %>% 
+  group_by(site, year, time) %>% 
+  summarise(temp_anom = mean(avg_seasonal_anom), chl_anom = mean(chl_anom)) %>% 
+  group_by(time) %>% 
+  summarise(temp_anom = mean(temp_anom), chl_anom = mean(chl_anom), chl_anom_transformed = (mean(chl_anom) * 0.5)) %>% 
+  ungroup()
+
+## FIGURE 1A
+anomaly_figure <- ggplot(data = anomalies, aes(x = time)) +
+  geom_rect(xmin = 2014.125, xmax = 2016.375, ymin = -10, ymax = 60, col = NA, fill = "gray90") +
+  geom_vline(xintercept = 2008.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2009.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2009.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2010.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2010.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2011.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2011.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2012.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2012.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2013.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2013.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2014.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2014.50, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2015.00, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2015.50, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2016.00, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2016.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2017.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2017.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2018.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2018.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2019.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2019.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2020.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2020.50, color = "gray80", size = 0.1) +
+  geom_hline(yintercept = 0.0, color = "black", size = 0.20) +
+  geom_line(size = 0.75, color = "black",  aes(y = temp_anom)) +
+  geom_line(size = 0.75, color = "black", linetype = "dotted", aes(y = chl_anom_transformed)) +
+  xlab("") +
+  ylab("Temperature Anomaly (C)") +
+  theme_article() +
+  scale_x_continuous(breaks = c(), expand = c(0,0)) +
+  ylim(-5,10) +
+  scale_y_continuous(breaks = c(-3,0,3),
+                     sec.axis = sec_axis(trans =~.*2, name = "Chlorophyll-a Anomally")) 
+anomaly_figure
+
+tiff(filename = "temp.chl.anomalies.tiff",
+     width = 800, height = 400, units = "px", pointsize = 14,
+     bg = "white", res = 100)
+print(anomaly_figure)
+dev.off()
+
+## average animal cover and species density figure:
+apc_richness <- modeling_data %>% 
+  group_by(time) %>% 
+  summarise(mean_apc = (mean(apc) * 100), se_apc = (((sd(apc))/sqrt(5)) * 100), mean_richness = mean(richness), se_richness = (sd(richness))/sqrt(5), mean_richness_scaled = (mean(richness) * 4), scaled_se_rich = (sd(richness))/sqrt(5) * 4) %>% 
+  ungroup()
+
+## FIGURE 1B
+animal_figure <- ggplot(data = apc_richness, aes(x = time)) +
+  geom_rect(xmin = 2014.125, xmax = 2016.375, ymin = -10, ymax = 60, col = NA, fill = "gray90") +
+  geom_vline(xintercept = 2008.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2009.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2009.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2010.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2010.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2011.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2011.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2012.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2012.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2013.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2013.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2014.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2014.50, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2015.00, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2015.50, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2016.00, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2016.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2017.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2017.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2018.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2018.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2019.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2019.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2020.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2020.50, color = "gray80", size = 0.1) +
+  geom_hline(yintercept = 0.0, color = "black", size = 0.20) +
+  geom_line(size = 0.75, color = "black",  aes(y = mean_apc)) +
+  geom_line(size = 0.75, color = "black", linetype = "dotted", aes(y = mean_richness_scaled)) +
+  xlab("") +
+  ylab("Animal Percent Cover") +
+  theme_article() +
+  scale_x_continuous(breaks = c(2008,2009,2010,2011,2012,2013,2014,2015,2016,2017,2018,2019,2020,2021),
+                     guide = "axis_minor",
+                     minor_breaks = seq(2008, 2021, 0.25),
+                     expand = c(0,0)) +
+  ylim(0,60) +
+  scale_y_continuous(breaks = c(0,10,20,30,40,50,60), expand = expansion(add = c(0,5)),
+                     sec.axis = sec_axis(trans =~.*.25, name = "Species Density", breaks = c(0,2.5,5,7.5,10,12.5))) 
+animal_figure
+
+tiff(filename = "animal.cover.richness.tiff",
+     width = 800, height = 400, units = "px", pointsize = 14,
+     bg = "white", res = 100)
+print(animal_figure)
+dev.off()
+
+```
+
+
+## Supplementary Figure 1:
+```{r}
+
+## Supplementary Figure 1A:
+animal_se_figure <- ggplot(data = apc_richness, aes(x = time)) +
+  geom_rect(xmin = 2014.125, xmax = 2016.375, ymin = -10, ymax = 80, col = NA, fill = "gray90") +
+  geom_vline(xintercept = 2008.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2009.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2009.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2010.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2010.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2011.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2011.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2012.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2012.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2013.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2013.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2014.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2014.50, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2015.00, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2015.50, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2016.00, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2016.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2017.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2017.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2018.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2018.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2019.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2019.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2020.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2020.50, color = "gray80", size = 0.1) +
+  geom_hline(yintercept = 0.0, color = "black", size = 0.20) +
+  geom_line(size = 0.75, color = "black",  aes(y = mean_apc)) +
+  geom_errorbar(aes(ymin=mean_apc-se_apc, ymax=mean_apc+se_apc), width=.1,
+                 position=position_dodge(0.05)) +
+  xlab("") +
+  ylab("Animal Percent Cover") +
+  theme_article() +
+  scale_x_continuous(breaks = c(2008,2009,2010,2011,2012,2013,2014,2015,2016,2017,2018,2019,2020,2021),
+                     guide = "axis_minor",
+                     minor_breaks = seq(2008, 2021, 0.25),
+                     expand = c(0,0)) +
+  ylim(0,60) +
+  scale_y_continuous(breaks = c(0,10,20,30,40,50,60,70), expand = expansion(add = c(0,5))) 
+animal_se_figure
+
+
+tiff(filename = "animal_se_figure.tiff",
+     width = 800, height = 400, units = "px", pointsize = 14,
+     bg = "white", res = 100)
+print(animal_se_figure)
+dev.off()
+
+## Supplementary Figure 1B:
+animal_se_richness_figure <- ggplot(data = apc_richness, aes(x = time)) +
+  geom_rect(xmin = 2014.125, xmax = 2016.375, ymin = -10, ymax = 80, col = NA, fill = "gray90") +
+  geom_vline(xintercept = 2008.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2009.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2009.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2010.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2010.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2011.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2011.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2012.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2012.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2013.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2013.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2014.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2014.50, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2015.00, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2015.50, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2016.00, color = "gray75", size = 0.1) +
+  geom_vline(xintercept = 2016.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2017.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2017.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2018.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2018.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2019.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2019.50, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2020.00, color = "gray80", size = 0.1) +
+  geom_vline(xintercept = 2020.50, color = "gray80", size = 0.1) +
+  geom_hline(yintercept = 0.0, color = "black", size = 0.20) +
+  geom_line(size = 0.75, color = "black", aes(y = mean_richness)) +
+  geom_errorbar(aes(ymin=mean_richness-se_richness, ymax=mean_richness+se_richness), width=.1) +
+  xlab("") +
+  ylab("Animal Richness") +
+  theme_article() +
+  scale_x_continuous(breaks = c(2008,2009,2010,2011,2012,2013,2014,2015,2016,2017,2018,2019,2020,2021),
+                     guide = "axis_minor",
+                     minor_breaks = seq(2008, 2021, 0.25),
+                     expand = c(0,0)) +
+  ylim(0,17) +
+  scale_y_continuous(breaks = c(0,5,10,15), expand = expansion(add = c(0,2))) 
+animal_se_richness_figure
+
+tiff(filename = "animal_se_richness_figure.tiff",
+     width = 800, height = 400, units = "px", pointsize = 14,
+     bg = "white", res = 100)
+print(animal_se_richness_figure)
+dev.off()
+```
+
+## Figure 3:
+```{r}
+by_phylum <- lte_cover %>% 
+  janitor::clean_names() %>% 
+  filter(treatment == "CONTROL") %>% 
+  mutate(date = ymd(date)) %>% 
+  filter(!(date > "2021-02-25")) %>% 
+  filter(mobility == "SESSILE") %>% 
+  filter(group == "INVERT") %>% 
+  mutate(count = percent_cover / 5) %>% 
+  filter(count >= 0) %>% 
+  mutate(count = count / 80) %>% 
+  group_by(site, year, month, date, taxon_kingdom, taxon_phylum) %>% 
+  summarise(count = sum(count)) %>%
+  mutate(month = month(date)) %>%
+  mutate(month = case_when(
+    site == "AQUE" & year == "2015" & month == "3" ~ "2",
+    site == "AQUE" & year == "2017" & month == "3" ~ "2",
+    site == "MOHK" & year == "2013" & month == "6" ~ "5",
+    TRUE ~ as.character(month))) %>% 
+  mutate(seas = case_when(
+    month == "1" ~ 0.0,
+    month == "2" ~ 0.0,
+    month == "3" ~ 0.25,
+    month == "4" ~ 0.25,
+    month == "5" ~ 0.25,
+    month == "6" ~ 0.5,
+    month == "7" ~ 0.5,
+    month == "8" ~ 0.5,
+    month == "9" ~ 0.75,
+    month == "10" ~ 0.75,
+    month == "11" ~ 0.75,
+    month == "12" ~ 0.9)) %>% 
+  mutate(time = year + seas) %>% 
+  mutate(time = case_when(
+    time == 2008.90 ~ "2009.00",
+    time == 2009.90 ~ "2010.00",
+    time == 2010.90 ~ "2011.00",
+    time == 2011.90 ~ "2012.00",
+    time == 2012.90 ~ "2013.00",
+    time == 2013.90 ~ "2014.00",
+    time == 2014.90 ~ "2015.00",
+    time == 2015.90 ~ "2016.00",
+    time == 2016.90 ~ "2017.00",
+    time == 2017.90 ~ "2018.00",
+    time == 2018.90 ~ "2019.00",
+    time == 2019.90 ~ "2020.00",
+    TRUE ~ as.character(as.numeric(time)))) %>% 
+  mutate(time = as.numeric(time)) %>% 
+  mutate(seas = case_when(
+    seas == 0.00 ~ 0.00, 
+    seas == 0.25 ~ 0.25,
+    seas == 0.50 ~ 0.50,
+    seas == 0.75 ~ 0.75,
+    seas == 0.90 ~ 0.00)) %>% 
+  mutate(year = time - seas) %>% 
+  mutate(season = seas) %>% 
+  mutate(time = year + season) %>% 
+  filter(taxon_phylum != "Entoprocta") %>% 
+  filter(taxon_phylum != "Echinodermata") %>% 
+  filter(taxon_phylum != "Arthropoda") %>% 
+  group_by(site, year, time, taxon_phylum) %>% 
+  summarise(count = mean(count)) %>% 
+  mutate(pc = count * 100) %>% 
+  mutate(blob = case_when(
+    year <= 2013 ~ "before",
+    year == 2014 ~ "during",
+    year == 2015 ~ "during",
+    year >= 2016 ~ "after"))
+
+by_phylum_avg <- by_phylum %>% 
+  group_by(blob, year, time, taxon_phylum) %>% 
+  summarise(count = mean(count)) %>% 
+  mutate(pc = count * 100) %>% 
+  mutate(seas = time - year) %>% 
+  mutate(season = case_when(
+    seas == 0.00 ~ "W",
+    seas == 0.25 ~ "Sp",
+    seas == 0.50 ~ "Su",
+    seas == 0.75 ~ "F"))
+
+by_phylum_avg$taxon_phylum <- factor(by_phylum_avg$taxon_phylum, levels = c("Porifera", "Bryozoa",  "Chordata", "Annelida", "Mollusca", "Cnidaria"))
+
+avg_year <- by_phylum_avg %>% 
+  mutate(year1 = case_when(  ## A year is spring 2008 - Winter 2009, so a year needs to be removed from Winter months 
+    time == 2008.00 ~ 2007.00,
+    time == 2009.00 ~ 2008.00,
+    time == 2010.00 ~ 2009.00,
+    time == 2011.00 ~ 2010.00,
+    time == 2012.00 ~ 2011.00,
+    time == 2013.00 ~ 2012.00,
+    time == 2014.00 ~ 2013.00,
+    time == 2015.00 ~ 2014.00,
+    time == 2016.00 ~ 2015.00,
+    time == 2017.00 ~ 2016.00,
+    time == 2018.00 ~ 2017.00,
+    time == 2019.00 ~ 2018.00,
+    time == 2020.00 ~ 2019.00,
+    time == 2021.00 ~ 2020.00,
+    TRUE ~ as.numeric(time))) %>% 
+  mutate(year2 = year1 - seas) %>% 
+  group_by(year2, taxon_phylum) %>% 
+  summarise(mean_pc = mean(pc)) %>% 
+  filter(year2 >= 2008)
+## Figure 3
+phylum_annual <- ggplot(data = avg_year, aes(x = year2, y = mean_pc, fill = taxon_phylum)) +
+  geom_rect(xmin = 2013.5, xmax = 2015.5, ymin = 0.0, ymax = 60.0, col = NA, fill = "gray90") +
+  geom_rect(xmin = 2013.00, xmax = 2017, ymin = -10, ymax = 0.0, col = NA, fill = "white") +
+  geom_col(color = "black", size = 0.3) + 
+  scale_fill_manual(values = c("#d73027",  "#fc8d59", "#fee090", "#e0f3f8", "#91bfdb","#4575b4")) +
+  xlab("Year") +
+  ylab("Percent Cover") +
+  theme_article() +
+  scale_x_continuous(breaks = c(2008,2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020),
+                     expand = c(0,0)) +
+  scale_y_continuous(limits = c(0.0, 50.0),
+                     expand = c(0,0)) +
+  labs(fill = "Phylum") 
+phylum_annual
+
+tiff(filename = "phylum_annual_cover.tiff",
+     width = 800, height = 600, units = "px", pointsize = 14,
+     bg = "white", res = 100)
+print(phylum_annual)
+dev.off()
+```
+
+## Supplementary Figure 2:
+```{r}
+phylum_seasonal <- ggplot(data = by_phylum_avg, aes(x = time, y = pc, fill = taxon_phylum)) +
+  geom_rect(xmin = 2014.125, xmax = 2016.125, ymin = 0.0, ymax = 60.0, col = NA, fill = "gray90") +
+  geom_rect(xmin = 2013.00, xmax = 2017, ymin = -10, ymax = 0.0, col = NA, fill = "white") +
+  geom_col(color = "black", size = 0.3) + 
+  scale_fill_manual(values = c("#d73027",  "#fc8d59", "#fee090", "#e0f3f8", "#91bfdb","#4575b4")) +
+  xlab("Year") +
+  ylab("Percent Cover") +
+  theme_article() +
+  scale_x_continuous(breaks = c(2008,2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020),
+                     expand = c(0,0)) +
+  scale_y_continuous(limits = c(0.0, 50.0),
+                     expand = c(0,0)) +
+  labs(fill = "Phylum") 
+phylum_seasonal
+
+tiff(filename = "phylum_seasonal_cover.tiff",
+     width = 900, height = 600, units = "px", pointsize = 14,
+     bg = "white", res = 100)
+print(phylum_seasonal)
+dev.off()
+```
+
+## Supplementary Figures 3 and 4:
+```{r}
+by_species_avg <- lte_cover %>% 
+  janitor::clean_names() %>% 
+  filter(treatment == "CONTROL") %>% 
+  mutate(date = ymd(date)) %>% 
+  filter(!(date > "2021-02-25")) %>% 
+  filter(mobility == "SESSILE") %>% 
+  filter(group == "INVERT") %>% 
+  mutate(count = percent_cover / 5) %>% 
+  filter(count >= 0) %>% 
+  mutate(count = count / 80) %>% 
+  group_by(site, year, month, date, taxon_kingdom, taxon_phylum, taxon_class, scientific_name) %>% 
+  summarise(count = sum(count)) %>%
+  mutate(month = month(date)) %>%
+  mutate(month = case_when(
+    site == "AQUE" & year == "2015" & month == "3" ~ "2",
+    site == "AQUE" & year == "2017" & month == "3" ~ "2",
+    site == "MOHK" & year == "2013" & month == "6" ~ "5",
+    TRUE ~ as.character(month))) %>% 
+  mutate(seas = case_when(
+    month == "1" ~ 0.0,
+    month == "2" ~ 0.0,
+    month == "3" ~ 0.25,
+    month == "4" ~ 0.25,
+    month == "5" ~ 0.25,
+    month == "6" ~ 0.5,
+    month == "7" ~ 0.5,
+    month == "8" ~ 0.5,
+    month == "9" ~ 0.75,
+    month == "10" ~ 0.75,
+    month == "11" ~ 0.75,
+    month == "12" ~ 0.9)) %>% 
+  mutate(time = year + seas) %>% 
+  mutate(time = case_when(
+    time == 2008.90 ~ "2009.00",
+    time == 2009.90 ~ "2010.00",
+    time == 2010.90 ~ "2011.00",
+    time == 2011.90 ~ "2012.00",
+    time == 2012.90 ~ "2013.00",
+    time == 2013.90 ~ "2014.00",
+    time == 2014.90 ~ "2015.00",
+    time == 2015.90 ~ "2016.00",
+    time == 2016.90 ~ "2017.00",
+    time == 2017.90 ~ "2018.00",
+    time == 2018.90 ~ "2019.00",
+    time == 2019.90 ~ "2020.00",
+    TRUE ~ as.character(as.numeric(time)))) %>% 
+  mutate(time = as.numeric(time)) %>% 
+  mutate(seas = case_when(
+    seas == 0.00 ~ 0.00, 
+    seas == 0.25 ~ 0.25,
+    seas == 0.50 ~ 0.50,
+    seas == 0.75 ~ 0.75,
+    seas == 0.90 ~ 0.00)) %>% 
+  mutate(year = time - seas) %>% 
+  mutate(season = seas) %>% 
+  mutate(time = year + season) %>% 
+  filter(taxon_phylum != "Entoprocta") %>% 
+  filter(taxon_phylum != "Echinodermata") %>% 
+  filter(taxon_phylum != "Arthropoda") %>% 
+  group_by(site, year, time, taxon_phylum, taxon_class, scientific_name) %>% 
+  summarise(count = mean(count)) %>% 
+  mutate(pc = count * 100) %>% 
+  mutate(blob = case_when(
+    year <= 2013 ~ "before",
+    year == 2014 ~ "during",
+    year == 2015 ~ "during",
+    year >= 2016 ~ "after")) %>% 
+  group_by(blob, year, time, taxon_phylum, taxon_class, scientific_name) %>% 
+  summarise(count = mean(count)) %>% 
+  mutate(pc = count * 100) %>% 
+  mutate(seas = time - year) %>% 
+  mutate(season = case_when(
+    seas == 0.00 ~ "W",
+    seas == 0.25 ~ "Sp",
+    seas == 0.50 ~ "Su",
+    seas == 0.75 ~ "F"))
+
+avg_year_species <- by_species_avg %>% 
+  mutate(year1 = case_when(  ## A year is spring 2008 - Winter 2009, so a year needs to be removed from Winter months 
+    time == 2008.00 ~ 2007.00,
+    time == 2009.00 ~ 2008.00,
+    time == 2010.00 ~ 2009.00,
+    time == 2011.00 ~ 2010.00,
+    time == 2012.00 ~ 2011.00,
+    time == 2013.00 ~ 2012.00,
+    time == 2014.00 ~ 2013.00,
+    time == 2015.00 ~ 2014.00,
+    time == 2016.00 ~ 2015.00,
+    time == 2017.00 ~ 2016.00,
+    time == 2018.00 ~ 2017.00,
+    time == 2019.00 ~ 2018.00,
+    time == 2020.00 ~ 2019.00,
+    time == 2021.00 ~ 2020.00,
+    TRUE ~ as.numeric(time))) %>% 
+  mutate(year2 = year1 - seas) %>% 
+  group_by(year2, taxon_phylum, taxon_class, scientific_name) %>% 
+  summarise(mean_pc = mean(pc)) %>% 
+  filter(year2 >= 2008)
+```
+
+### Supplementary Figure 3:
+```{r}
+bryozoa_annual <- avg_year_species %>% 
+  filter(taxon_phylum == "Bryozoa") %>% 
+  filter(scientific_name != "Unidentified Arborescent Bryozoan") %>% 
+  filter(scientific_name != "Celleporina robertsoniae") %>% 
+  filter(scientific_name != "Jellyella tuberculata") %>% 
+  filter(scientific_name != "Primavelans mexicana") %>% 
+  filter(scientific_name != "Phidolopora labiata") %>% 
+  filter(scientific_name != "Heteropora pacifica") %>% 
+  filter(scientific_name != "Amathia gracilis")  %>% 
+  mutate(scientific_name = case_when(
+    scientific_name == "Cellaria diffusa; Cellaria mandibulata" ~ "Cellaria spp.",
+    scientific_name == "Unidentified Encrusting Bryozoa spp. " ~ "Unidentified Encrusting",
+    TRUE ~ as.character(scientific_name))) 
+bryozoa_annual$scientific_name <- factor(bryozoa_annual$scientific_name, levels = c("Watersipora subatra", "Diaperoforma californica", "Cellaria spp.", "Bugula neritina", "Bugulina californica", "Crisia occidentalis", "Thalamoporella californica", "Unidentified Encrusting"))
+
+bryozoa_year <- ggplot(data = bryozoa_annual, aes(x = year2, y = mean_pc, fill = scientific_name)) +
+  geom_rect(xmin = 2013.5, xmax = 2015.5, ymin = 0.0, ymax = 60.0, col = NA, fill = "gray90") +
+  geom_rect(xmin = 2013.00, xmax = 2017, ymin = -10, ymax = 0.0, col = NA, fill = "white") +
+  geom_col(color = "black", size = 0.3) + 
+  scale_fill_manual(values = c("#d73027", "#f46d43", "#fdae61", "#fee090", "#e0f3f8", "#abd9e9", "#74add1", "#4575b4")) +
+  xlab("Year") +
+  ylab("Percent Cover") +
+  theme_article() +
+  scale_x_continuous(breaks = c(2008,2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020),
+                     expand = c(0,0)) +
+  scale_y_continuous(limits = c(0.0, 20.0),
+                     expand = c(0,0)) +
+  labs(fill = "Species") +
+    ggtitle("Bryozoa")
+bryozoa_year
+
+tiff(filename = "bryozoa_annual_cover.tiff",
+     width = 900, height = 600, units = "px", pointsize = 14,
+     bg = "white", res = 100)
+print(bryozoa_year)
+dev.off()
+```
+
+### Supplementary Figure 4:
+```{r}
+# Mollusca 
+mollusca_annual <- avg_year_species %>% 
+  filter(taxon_phylum == "Mollusca") %>% 
+  filter(scientific_name != "Mytilus californianus")
+mollusca_annual$scientific_name <- factor(mollusca_annual$scientific_name, levels = c("Crassadoma gigantea", "Chaceia ovoidea", "Thylacodes squamigerus", "Parapholas californica"))
+
+mollusca_year <- ggplot(data = mollusca_annual, aes(x = year2, y = mean_pc, fill = scientific_name)) +
+  geom_rect(xmin = 2013.5, xmax = 2015.5, ymin = 0.0, ymax = 60.0, col = NA, fill = "gray90") +
+  geom_rect(xmin = 2013.00, xmax = 2017, ymin = -10, ymax = 0.0, col = NA, fill = "white") +
+  geom_col(color = "black", size = 0.3) + 
+  scale_fill_manual(values = c("#d7191c", "#fdae61",  "#abd9e9", "#2c7bb6")) +
+  xlab("Year") +
+  ylab("Percent Cover") +
+  theme_article() +
+  scale_x_continuous(breaks = c(2008,2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020),
+                     expand = c(0,0)) +
+  scale_y_continuous(limits = c(0.0, 6.0),
+                     expand = c(0,0)) +
+  labs(fill = "Species") +
+    ggtitle("Mollusca")
+mollusca_year
+
+tiff(filename = "mollusca_annual_cover.tiff",
+     width = 900, height = 600, units = "px", pointsize = 14,
+     bg = "white", res = 100)
+print(mollusca_year)
+dev.off()
+```
+
+## Community Data for CAP Analysis (completed in PRIMER-e version 7):
+```{r}
+community_environmental <- animalia_cover %>% 
+  group_by(date, site, scientific_name) %>% 
+  summarise(percent_cover = sum(percent_cover)) %>% 
+  mutate(date = ymd(date)) %>% 
+  filter(!(date > "2021-02-25")) %>% 
+  mutate(month = month(date)) %>% 
+  mutate(year = year(date)) %>% 
+  mutate(month = case_when(
+    site == "AQUE" & year == "2015" & month == "3" ~ "2",
+    site == "AQUE" & year == "2017" & month == "3" ~ "2",
+    site == "MOHK" & year == "2013" & month == "6" ~ "5",
+    TRUE ~ as.character(month))) %>% 
+  mutate(seas = case_when(month == "12" ~ 0.90,
+                            month == "1" ~ 0.00,
+                            month == "2" ~ 0.00,
+                            month == "3" ~ 0.25,
+                            month == "4" ~ 0.25,
+                            month == "5" ~ 0.25,
+                            month == "6" ~ 0.50,
+                            month == "7" ~ 0.50,
+                            month == "8" ~ 0.50,
+                            month == "9" ~ 0.75,
+                            month == "10" ~ 0.75,
+                            month ==  "11" ~ 0.75)) %>% 
+  mutate(time = year + seas) %>% 
+  mutate(time = case_when(
+    time == 2008.90 ~ "2009.00",
+    time == 2009.90 ~ "2010.00",
+    time == 2010.90 ~ "2011.00",
+    time == 2011.90 ~ "2012.00",
+    time == 2012.90 ~ "2013.00",
+    time == 2013.90 ~ "2014.00",
+    time == 2014.90 ~ "2015.00",
+    time == 2015.90 ~ "2016.00",
+    time == 2016.90 ~ "2017.00",
+    time == 2017.90 ~ "2018.00",
+    time == 2018.90 ~ "2019.00",
+    time == 2019.90 ~ "2020.00",
+    time == 2020.90 ~ "2021.00",
+    TRUE ~ as.character(as.numeric(time)))) %>% 
+  mutate(time = as.numeric(time)) %>% 
+  group_by(site, time, scientific_name) %>% 
+  summarise(percent_cover = mean(percent_cover)) %>% 
+  filter(site != "IVEE") %>%  ## excluding IV data, begins in 2011 instead of 2008
+  group_by(time, scientific_name) %>%  ## taking the average across 4 sites for CAP
+  summarise(percent_cover = mean(percent_cover))
+
+avg_community <- community_environmental %>% 
+  spread(scientific_name, percent_cover)
+
+environmental <- avg_community %>% 
+  dplyr::select(time) %>% 
+  mutate(blob = case_when(
+    time <= 2014.00 ~ "Before",
+    time == 2014.25 ~ "During",
+    time == 2014.50 ~ "During",
+    time == 2014.75 ~ "During",
+    time == 2015.0 ~ "During",
+    time == 2015.25 ~ "During",
+    time == 2015.50 ~ "During",
+    time == 2015.75 ~ "During",
+    time == 2016.00 ~ "During",
+    time >= 2016.25 ~ "After"
+  )) %>% 
+  ungroup() %>% 
+  dplyr::select(-time)
+  
+avg_community_df_CAP <- avg_community %>% 
+  ungroup() %>% 
+  dplyr::select(c(-time)) %>% 
+  dplyr::select(c(-"Halcampa decemtentaculata", -"Heteropora pacifica", -"Paracyathus stearnsii", -"Spheciospongia confoederata"))
+
+## write.csv(avg_community_df_CAP,"~/Library/SPECIFY PATHWAY/avg_community_df_CAP.csv", row.names = FALSE)
+## write.csv(environmental, "~/Library/SPECIFY PATHWAY/environmental_CAP.csv", row.names = FALSE)
+```
+
+## Evaluating Differences in Community Structure over time (PERMANOVA)
+```{r}
+# creating a matrix of the average species data 
+avg_species_matrix <- as.matrix(avg_community_df_CAP)
+avg_blob <- environmental$blob
+```
+
+##### Evaluating the Variance of the Data:
+```{r}
+# Creating a dissimilarity matrix using Bray-Curtis dissimilarities 
+avg_disimilarity_matrix <- vegdist(avg_species_matrix, method = "bray")
+
+# Checking the beta dispersion using the distance to the median, then distance to the centroids
+avg_blob_betadispersion <- betadisper(avg_disimilarity_matrix, avg_blob, type = "median", bias.adjust = TRUE)
+anova(avg_blob_betadispersion)
+## ANOVA, F = 4.0241, p = 0.02409
+TukeyHSD(avg_blob_betadispersion, which = "group",
+         conf.level = 0.95)
+permutest(avg_blob_betadispersion, pairwise = TRUE)
+## Pairwise comparisons show that there were significant differences detected in distances to spatial medians between Before and During (p=0.005)
+boxplot(avg_blob_betadispersion, ylab = "Distance to Median")
+
+
+avg_blob_betadispersion1 <- betadisper(avg_disimilarity_matrix, avg_blob, type = "centroid")
+anova(avg_blob_betadispersion1)
+TukeyHSD(avg_blob_betadispersion1, which = "group",
+         conf.level = 0.95)
+permutest(avg_blob_betadispersion1, pairwise = TRUE)
+boxplot(avg_blob_betadispersion1, ylab = "Distance to Centroid")
+## Same result as distance to median; significant differences in dispersion between Before and During 
+## Any analysis of community dissimilarity will have to be interpreted carefully given that group dispersions are significantly different between these three groups. Removing "During" time period may alleviate this issue. 
+```
+
+```{r}
+## Removing "during" data from average:
+avg_community_no_during <- bind_cols(avg_community, environmental) %>% 
+  filter(blob != "During") %>% 
+  ungroup() %>% 
+  dplyr::select(c(-time))
+blob_no_during <- avg_community_no_during$blob
+
+avg_com_no_during <- avg_community_no_during %>% 
+  dplyr::select(c(-blob))
+
+avg_com_matrix <- as.matrix(avg_com_no_during)
+```
+
+```{r}
+# Creating a dissimilarity matrix using Bray-Curtis dissimilarities 
+avg_disimilarity_matrix_no_during <- vegdist(avg_com_matrix, method = "bray")
+
+# Checking the beta dispersion using the distance to the median, then distance to the centroids
+avg_blob_betadispersion_no_during <- betadisper(avg_disimilarity_matrix_no_during, 
+                                                blob_no_during,
+                                                type = "median", bias.adjust = TRUE)
+anova(avg_blob_betadispersion_no_during)
+# No difference in group dispersions: ANOVA, F=0.8114, p=0.3728
+permutest(avg_blob_betadispersion_no_during)
+boxplot(avg_blob_betadispersion_no_during, ylab = "Distance to Median")
+## No difference
+
+
+# Checking the beta dispersion using the distance to the median, then distance to the centroids
+avg_blob_betadispersion_no_during1 <- betadisper(avg_disimilarity_matrix_no_during, 
+                                                blob_no_during,
+                                                type = "centroid", bias.adjust = TRUE)
+anova(avg_blob_betadispersion_no_during1)
+boxplot(avg_blob_betadispersion_no_during1, ylab = "Distance to Centroid")
+## Same result
+```
+
+#### PERMANOVA using adonis:
+```{r}
+adon.blob_avg <- adonis2(avg_com_matrix ~ blob, 
+                     data = avg_community_no_during, 
+                     method = "bray")
+adon.blob_avg
+## F = 13.462, p = 0.001 
+```
+
+## Indicator Species Analysis:
+https://jkzorz.github.io/2019/07/02/Indicator-species-analysis.html
+
+```{r}
+# creating dataframe with the animal cover by species by site, excluding species with no or very few observations over time (never seen or only seen 1 time at 1 site)
+community_by_site <- animalia_cover %>% 
+  group_by(date, site, scientific_name) %>% 
+  summarise(percent_cover = sum(percent_cover)) %>% 
+  mutate(date = ymd(date)) %>% 
+  mutate(month = month(date)) %>% 
+  mutate(year = year(date)) %>% 
+  mutate(month = case_when(
+    site == "AQUE" & year == "2015" & month == "3" ~ "2", # sampling was late for a given season
+    site == "AQUE" & year == "2017" & month == "3" ~ "2",
+    site == "MOHK" & year == "2013" & month == "6" ~ "5",
+    TRUE ~ as.character(month))) %>% 
+  mutate(seas = case_when(month == "12" ~ 0.90,
+                            month == "1" ~ 0.00,
+                            month == "2" ~ 0.00,
+                            month == "3" ~ 0.25,
+                            month == "4" ~ 0.25,
+                            month == "5" ~ 0.25,
+                            month == "6" ~ 0.50,
+                            month == "7" ~ 0.50,
+                            month == "8" ~ 0.50,
+                            month == "9" ~ 0.75,
+                            month == "10" ~ 0.75,
+                            month ==  "11" ~ 0.75)) %>% 
+  mutate(time = year + seas) %>% 
+  mutate(time = case_when(
+    time == 2008.90 ~ "2009.00",
+    time == 2009.90 ~ "2010.00",
+    time == 2010.90 ~ "2011.00",
+    time == 2011.90 ~ "2012.00",
+    time == 2012.90 ~ "2013.00",
+    time == 2013.90 ~ "2014.00",
+    time == 2014.90 ~ "2015.00",
+    time == 2015.90 ~ "2016.00",
+    time == 2016.90 ~ "2017.00",
+    time == 2017.90 ~ "2018.00",
+    time == 2018.90 ~ "2019.00",
+    time == 2019.90 ~ "2020.00",
+    time == 2020.90 ~ "2021.00",
+    TRUE ~ as.character(as.numeric(time)))) %>% 
+  mutate(time = as.numeric(time)) %>% 
+  group_by(site, time, scientific_name) %>% 
+  summarise(percent_cover = mean(percent_cover)) %>% 
+  filter(site != "IVEE") %>% ## excluding IV data, begins in 2011 instead of 2008 (too few points)
+  spread(scientific_name, percent_cover) %>% 
+  dplyr::select(c(-"Halcampa decemtentaculata", -"Heteropora pacifica", -"Paracyathus stearnsii", -"Spheciospongia confoederata")) %>% 
+  dplyr::select(c(-"Acanthancora cyanocrypta", -"Discophyton rudyi", -"Jellyella tuberculata", -"Muricea fruticosa", -"Mytilus californianus", -"Pachycerianthus fimbriatus", -"Phidolopora labiata", -"Primavelans mexicana", -"Tethya aurantium")) %>% 
+    mutate(blob = case_when(
+    time <= 2013.75 ~ "Before",
+    time == 2014.0 ~ "During",
+    time == 2014.25 ~ "During",
+    time == 2014.50 ~ "During",
+    time == 2014.75 ~ "During",
+    time == 2015.0 ~ "During",
+    time == 2015.25 ~ "During",
+    time == 2015.50 ~ "During",
+    time == 2015.75 ~ "During",
+    time >= 2016.0 ~ "After")) 
+
+# ensuring row sums are greater than 0 
+community_by_site$sum <- rowSums(community_by_site[,3:47]) 
+
+# creating a dataframe with only the site variables
+community_by_site_variables <- community_by_site %>% 
+  dplyr::select(time, site, blob)
+
+# creating a dataframe with only species values 
+community_by_site_species <- community_by_site %>% 
+  filter(sum > 0) %>% 
+  ungroup() %>% 
+  dplyr::select(c(-site, -time, -blob, -sum))
+
+abund = community_by_site_species
+blob = community_by_site_variables$blob
+site = community_by_site_variables$site
+
+inv.blob.all = multipatt(abund, blob, func = "IndVal", control = how(nperm=9999))
+
+summary(inv.blob.all, alpha = 1)
+```
