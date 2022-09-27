@@ -1,9 +1,9 @@
 # Community-Analysis-Michaud-et-al-2022
 Analysis code corresponding to the manuscript Michaud et al. 2022 in Communications Biology 
 
-Source code for the creation of "chl_seasonal.csv" can be found in the repository: 
+Source code for the creation of "chl_seasonal.csv" can be found in the repository: kristenmichaud/Chl-File-Code
 
-The file is also available within this repository.
+The csv file is also available within this repository.
 
 All larger publically available files from SBC LTER were uploaded as zip files, but can be downloaded directly:
 
